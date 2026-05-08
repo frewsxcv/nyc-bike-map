@@ -1,0 +1,160 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width,initial-scale=1" />
+<title>NYC bike lanes, without the streets</title>
+<link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" />
+<style>
+  html, body { margin: 0; height: 100%; background: #0b0b0f; color: #e8e8ee;
+    font-family: -apple-system, BlinkMacSystemFont, "Helvetica Neue", Arial, sans-serif; }
+  #map { position: absolute; inset: 0; background: #0b0b0f; }
+  .leaflet-container { background: #0b0b0f; outline: none; }
+  .panel { position: absolute; z-index: 500; top: 16px; left: 16px;
+    background: rgba(10,10,14,0.78); padding: 14px 16px; border: 1px solid #222;
+    max-width: 320px; backdrop-filter: blur(6px); }
+  .panel h1 { margin: 0 0 6px; font-size: 16px; font-weight: 600; letter-spacing: 0.2px; }
+  .panel p { margin: 4px 0; font-size: 12px; line-height: 1.45; color: #b8b8c2; }
+  .legend { display: flex; flex-direction: column; gap: 6px; margin-top: 10px;
+    font-size: 12px; color: #c8c8d4; }
+  .legend label { display: flex; align-items: center; gap: 8px; cursor: pointer;
+    user-select: none; }
+  .legend label.off { color: #5a5a68; }
+  .legend input { accent-color: #39ff7a; margin: 0; }
+  .swatch { width: 18px; height: 3px; display: inline-block; }
+  .legend label.off .swatch { opacity: 0.3; }
+  .km { margin-left: auto; font-variant-numeric: tabular-nums; color: #8d8da0;
+    font-size: 11px; }
+  .stats { margin-top: 10px; font-size: 11px; color: #8d8da0; }
+  .src { position: absolute; bottom: 8px; right: 12px; z-index: 500;
+    font-size: 10px; color: #6c6c7c; }
+  .src a { color: #8d8da0; text-decoration: none; }
+</style>
+</head>
+<body>
+<div id="map"></div>
+
+<div class="panel">
+  <h1>NYC bike lanes</h1>
+  <p>Every dedicated bike route in New York City, drawn against the silhouette of the five boroughs. No streets. No subways. Just the network, and the gaps.</p>
+  <div class="legend" id="legend">
+    <label data-class="protected"><input type="checkbox" checked>
+      <i class="swatch" style="background:#39ff7a"></i> Protected (Class I)
+      <span class="km" data-km="protected">-</span></label>
+    <label data-class="lane" class="off"><input type="checkbox">
+      <i class="swatch" style="background:#ffd23f"></i> Lane (II)
+      <span class="km" data-km="lane">-</span></label>
+    <label data-class="sharrow" class="off"><input type="checkbox">
+      <i class="swatch" style="background:#888"></i> Sharrow (III)
+      <span class="km" data-km="sharrow">-</span></label>
+  </div>
+  <div class="stats" id="stats">Loading bike lane geometry…</div>
+</div>
+
+<div class="src">
+  Data: <a href="https://data.cityofnewyork.us/Transportation/New-York-City-Bike-Routes/7vsa-caz7" target="_blank" rel="noopener">NYC Bike Routes</a> ·
+  <a href="https://data.cityofnewyork.us/City-Government/Borough-Boundaries/tqmj-j8zm" target="_blank" rel="noopener">Borough Boundaries</a>
+</div>
+
+<script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
+<script>
+const map = L.map('map', {
+  zoomControl: true,
+  attributionControl: false,
+  preferCanvas: true,
+}).setView([40.717, -73.94], 11);
+
+const BIKE_URL    = 'https://data.cityofnewyork.us/api/geospatial/mzxg-pwib?method=export&format=GeoJSON';
+const BOROUGH_URL = 'https://data.cityofnewyork.us/api/geospatial/gthc-hcne?method=export&format=GeoJSON';
+
+const classOf = (props) => {
+  const c = String(props.facilitycl || '').trim().toUpperCase();
+  if (c === 'I')   return 'protected';
+  if (c === 'II')  return 'lane';
+  if (c === 'III') return 'sharrow';
+  const txt = `${props.ft_facilit||''} ${props.tf_facilit||''}`.toLowerCase();
+  if (/protect|greenway|path|cycle ?track/.test(txt)) return 'protected';
+  if (/shared|sharrow/.test(txt)) return 'sharrow';
+  return 'lane';
+};
+const STYLE = {
+  protected: { color: '#39ff7a', weight: 1.7, opacity: 0.95 },
+  lane:      { color: '#ffd23f', weight: 1.1, opacity: 0.8  },
+  sharrow:   { color: '#888888', weight: 0.8, opacity: 0.55 },
+};
+
+fetch(BOROUGH_URL).then(r => r.json()).then(boros => {
+  L.geoJSON(boros, {
+    style: { color: '#2a2a38', weight: 1, fillColor: '#15151c', fillOpacity: 1 },
+    interactive: false,
+  }).addTo(map);
+  const b = L.geoJSON(boros).getBounds();
+  map.fitBounds(b, { padding: [20, 20] });
+}).catch(() => {});
+
+fetch(BIKE_URL).then(r => r.json()).then(bikes => {
+  const features = (bikes && bikes.features) || [];
+  if (!features.length) throw new Error('no features in response');
+
+  const current = features.filter(f => {
+    const s = String((f.properties || {}).status || '').toLowerCase();
+    return f.geometry && (s === '' || s === 'current');
+  });
+
+  const lengthOfLine = (coords) => {
+    let m = 0;
+    for (let i = 1; i < coords.length; i++) {
+      const a = L.latLng(coords[i-1][1], coords[i-1][0]);
+      const b = L.latLng(coords[i][1],   coords[i][0]);
+      m += a.distanceTo(b);
+    }
+    return m;
+  };
+  const featLengthKm = (f) => {
+    const lines = f.geometry.type === 'MultiLineString' ? f.geometry.coordinates
+                : f.geometry.type === 'LineString'      ? [f.geometry.coordinates]
+                : [];
+    return lines.reduce((s, l) => s + lengthOfLine(l), 0) / 1000;
+  };
+
+  const km = { protected: 0, lane: 0, sharrow: 0 };
+  const buckets = { protected: [], lane: [], sharrow: [] };
+  current.forEach(f => {
+    const c = classOf(f.properties || {});
+    km[c] += featLengthKm(f);
+    buckets[c].push(f);
+  });
+
+  const layers = {};
+  for (const c of ['protected', 'lane', 'sharrow']) {
+    layers[c] = L.geoJSON({ type: 'FeatureCollection', features: buckets[c] }, {
+      style: STYLE[c],
+      interactive: false,
+    });
+  }
+  layers.protected.addTo(map);
+
+  const fmt = (n) => n.toLocaleString(undefined, { maximumFractionDigits: 0 });
+  for (const c of ['protected', 'lane', 'sharrow']) {
+    document.querySelector(`[data-km="${c}"]`).textContent = `${fmt(km[c])} km`;
+  }
+  const total = km.protected + km.lane + km.sharrow;
+  document.getElementById('stats').innerHTML =
+    `${fmt(total)} km of bike route total · ${fmt(km.protected)} km protected ` +
+    `(${(km.protected/total*100).toFixed(0)}%)<br>` +
+    `NYC has ~${fmt(10000)} km of public street; what you see is the rest.`;
+
+  document.querySelectorAll('#legend label').forEach(label => {
+    const c = label.dataset.class;
+    const cb = label.querySelector('input');
+    cb.addEventListener('change', () => {
+      if (cb.checked) { layers[c].addTo(map); label.classList.remove('off'); }
+      else            { map.removeLayer(layers[c]); label.classList.add('off'); }
+    });
+  });
+}).catch(err => {
+  document.getElementById('stats').textContent = 'Could not load bike lane data: ' + err;
+});
+</script>
+</body>
+</html>
